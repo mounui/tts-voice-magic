@@ -1,0 +1,40 @@
+name: Deploy to Cloudflare Workers
+
+on:
+  push:
+    branches:
+      - main  # 监听主分支，如果你用 master 请改为 master
+  workflow_dispatch: # 允许手动在 Actions 页面触发
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      deployments: write
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20' # 根据你的项目需求调整，tts-voice-magic 通常兼容 18+
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+        # 如果项目没有 package-lock.json 或用的是 yarn/pnpm，请相应修改命令
+        # 例如: yarn install 或 pnpm install
+
+      - name: Deploy to Cloudflare
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # 如果 wrangler.toml 中已经配置了 name 和 account_id，下面这行可以省略
+          # command: deploy 
+          
+          # 如果需要在部署时覆盖环境变量，可以在这里添加
+          # environment: production 
