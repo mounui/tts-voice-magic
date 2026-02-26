@@ -1813,11 +1813,11 @@ const HTML_PAGE = `
                 success.style.display = 'block';
                 
                 // 显示公众号推广组件
-                setTimeout(() => {
-                    const wechatPromotion = document.getElementById('wechatPromotion');
-                    wechatPromotion.style.display = 'block';
-                    wechatPromotion.classList.add('fade-in');
-                }, 1000);
+                // setTimeout(() => {
+                //     const wechatPromotion = document.getElementById('wechatPromotion');
+                //     wechatPromotion.style.display = 'block';
+                //     wechatPromotion.classList.add('fade-in');
+                // }, 1000);
                 
             } catch (err) {
                 loading.style.display = 'none';
@@ -2050,11 +2050,11 @@ const HTML_PAGE = `
                 transcriptionSuccess.style.display = 'block';
                 
                 // 显示公众号推广组件
-                setTimeout(() => {
-                    const wechatPromotion = document.getElementById('wechatPromotion');
-                    wechatPromotion.style.display = 'block';
-                    wechatPromotion.classList.add('fade-in');
-                }, 1000);
+                // setTimeout(() => {
+                //     const wechatPromotion = document.getElementById('wechatPromotion');
+                //     wechatPromotion.style.display = 'block';
+                //     wechatPromotion.classList.add('fade-in');
+                // }, 1000);
                 
             } catch (err) {
                 transcriptionLoading.style.display = 'none';
@@ -2527,21 +2527,34 @@ function escapeXmlText(text) {
 }
 
 function getSsml(text, voiceName, rate, pitch, volume, style, slien = 0) {
-    // 对文本进行XML转义
-    const escapedText = escapeXmlText(text);
-    
-    let slien_str = '';
-    if (slien > 0) {
-        slien_str = `<break time="${slien}ms" />`
+    // --- 新增：判断 text 是否为 SSML 文本 ---
+    // 核心检测逻辑：检查文本是否以 `<speak` 标签开头并以 `</speak>` 标签结尾。
+    // 使用正则表达式进行宽松匹配，允许 `<speak>` 标签带有属性。
+    const isSsmlInput = /^\s*<speak[\s>].*<\/speak>\s*$/is.test(text);
+
+    if (isSsmlInput) {
+        // 情况1：输入是 SSML 文本
+        // 直接返回原文本，因为其中已包含完整的 `<speak>...</speak>` 结构和所有需要的标签。
+        // 注意：此时传入的 `voiceName`， `style` 等参数将被忽略，因为SSML内部应已定义。
+        console.log('检测到输入为 SSML 文本，将直接传递给 TTS 引擎。');
+        return text;
+    } else {
+        // 对文本进行XML转义
+        const escapedText = escapeXmlText(text);
+        
+        let slien_str = '';
+        if (slien > 0) {
+            slien_str = `<break time="${slien}ms" />`
+        }
+        return `<speak xmlns="http://www.w3.org/2001/10/synthesis" xmlns:mstts="http://www.w3.org/2001/mstts" version="1.0" xml:lang="zh-CN"> 
+                    <voice name="${voiceName}"> 
+                        <mstts:express-as style="${style}"  styledegree="2.0" role="default" > 
+                            <prosody rate="${rate}" pitch="${pitch}" volume="${volume}">${escapedText}</prosody> 
+                        </mstts:express-as> 
+                        ${slien_str}
+                    </voice> 
+                </speak>`;
     }
-    return `<speak xmlns="http://www.w3.org/2001/10/synthesis" xmlns:mstts="http://www.w3.org/2001/mstts" version="1.0" xml:lang="zh-CN"> 
-                <voice name="${voiceName}"> 
-                    <mstts:express-as style="${style}"  styledegree="2.0" role="default" > 
-                        <prosody rate="${rate}" pitch="${pitch}" volume="${volume}">${escapedText}</prosody> 
-                    </mstts:express-as> 
-                    ${slien_str}
-                </voice> 
-            </speak>`;
 
 }
 

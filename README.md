@@ -2,7 +2,6 @@
 
 一个功能强大的AI语音处理平台，集成了文字转语音(TTS)和语音转文字(STT)双向功能。基于Microsoft Edge TTS和硅基流动API，支持20+种语音选项，为用户提供完整的语音处理解决方案。
 >
-> 直接使用: https://tts.wangwangit.com
 
 <img width="2512" height="1284" alt="image" src="https://github.com/user-attachments/assets/570961ef-b189-480f-833e-7877ce38f19d" />
 
@@ -33,7 +32,7 @@
 
 ### 点击按钮，一键部署到 CloudFlare Workers,
 
-[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/wangwangit/tts)
+[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/mounui/tts-voice-magic)
 
 
 
