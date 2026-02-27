@@ -2550,10 +2550,9 @@ async function getAudioChunk(text, voiceName, rate, pitch, volume, style, output
                 ssmlBody = getSsml(text, voiceName, rate, pitch, volume, style, slien);
             }
             
-            console.log(ssmlBody);
             // 验证SSML格式
             if (!ssmlBody.includes('<speak>') || !ssmlBody.includes('</speak>')) {
-                throw new Error("生成的SSML格式无效");
+                throw new Error(ssmlBody);
             }
             
             const response = await fetch(url, {
