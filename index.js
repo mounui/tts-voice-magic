@@ -2324,6 +2324,77 @@ function optimizedTextSplit(text, maxChunkSize = 1500) {
     return chunks.filter(chunk => chunk.length > 0);
 }
 
+// 专门的SSML分块函数
+function splitSsmlText(ssmlText, maxChunkSize = 1500) {
+    // 检查是否是完整的SSML文本
+    if (!/^\s*<speak[\s>].*<\/speak>\s*$/is.test(ssmlText)) {
+        // 如果不是完整SSML，按普通文本处理
+        return optimizedTextSplit(ssmlText, maxChunkSize);
+    }
+
+    const chunks = [];
+    
+    try {
+        // 方法1：使用正则表达式解析SSML
+        // 移除外部speak标签，保留内部内容
+        const innerContent = ssmlText.replace(/^\s*<speak[^>]*>|<\/speak>\s*$/g, '').trim();
+        
+        // 查找所有的完整句子边界，同时考虑SSML标签
+        const sentencePattern = /([^。！？.!?]+[。！？.!?]|<[^>]+>)/g;
+        const matches = innerContent.match(sentencePattern) || [];
+        
+        let currentChunk = '<speak>';
+        let currentLength = currentChunk.length;
+        
+        for (let i = 0; i < matches.length; i++) {
+            const segment = matches[i];
+            const segmentLength = segment.length;
+            
+            // 如果当前块加上这个片段会超过限制，且当前块已经有内容
+            if (currentLength + segmentLength + 8 > maxChunkSize && currentLength > 7) {
+                // 完成当前块
+                currentChunk += '</speak>';
+                chunks.push(currentChunk);
+                
+                // 开始新块
+                currentChunk = '<speak>';
+                currentLength = currentChunk.length;
+            }
+            
+            // 添加片段到当前块
+            currentChunk += segment;
+            currentLength += segmentLength;
+        }
+        
+        // 添加最后一个块
+        if (currentLength > 7) {
+            currentChunk += '</speak>';
+            chunks.push(currentChunk);
+        }
+        
+        // 验证：确保每个块都是有效的XML
+        const validChunks = chunks.filter(chunk => {
+            try {
+                // 简单检查标签配对
+                const openTags = (chunk.match(/<([^\/>]+)>/g) || []).length;
+                const closeTags = (chunk.match(/<\/([^>]+)>/g) || []).length;
+                return chunk.includes('<speak>') && chunk.includes('</speak>') && 
+                       openTags === closeTags;
+            } catch {
+                return false;
+            }
+        });
+        
+        return validChunks;
+        
+    } catch (error) {
+        console.error('SSML分块失败:', error);
+        // 如果解析失败，回退到简单分块（移除标签）
+        const plainText = ssmlText.replace(/<[^>]*>/g, '');
+        return optimizedTextSplit(plainText, maxChunkSize);
+    }
+}
+
 // 批量处理音频块
 async function processBatchedAudioChunks(chunks, voiceName, rate, pitch, volume, style, outputFormat, batchSize = 3, delayMs = 1000) {
     const audioChunks = [];
@@ -2368,6 +2439,9 @@ async function getVoice(text, voiceName = "zh-CN-XiaoxiaoNeural", rate = '+0%', 
             throw new Error("文本内容为空");
         }
         
+        // 检测是否为SSML文本
+        const isSsmlInput = /^\s*<speak[\s>].*<\/speak>\s*$/is.test(cleanText);
+        
         // 如果文本很短，直接处理
         if (cleanText.length <= 1500) {
             const audioBlob = await getAudioChunk(cleanText, voiceName, rate, pitch, volume, style, outputFormat);
@@ -2379,8 +2453,14 @@ async function getVoice(text, voiceName = "zh-CN-XiaoxiaoNeural", rate = '+0%', 
             });
         }
 
-        // 优化的文本分块
-        const chunks = optimizedTextSplit(cleanText, 1500);
+        // 根据文本类型选择分块策略
+        let chunks;
+        if (isSsmlInput) {
+            console.log('检测到SSML输入，使用SSML分块策略');
+            chunks = splitSsmlText(cleanText, 1500);
+        } else {
+            chunks = optimizedTextSplit(cleanText, 1500);
+        }
         
         // 检查分块数量，防止超过CloudFlare限制
         if (chunks.length > 40) {
@@ -2388,6 +2468,9 @@ async function getVoice(text, voiceName = "zh-CN-XiaoxiaoNeural", rate = '+0%', 
         }
         
         console.log(`文本已分为 ${chunks.length} 个块进行处理`);
+        if (isSsmlInput) {
+            console.log('SSML分块预览（前2个块）:', chunks.slice(0, 2));
+        }
 
         // 批量处理音频块，控制并发数量和频率
         const audioChunks = await processBatchedAudioChunks(
@@ -2430,8 +2513,6 @@ async function getVoice(text, voiceName = "zh-CN-XiaoxiaoNeural", rate = '+0%', 
     }
 }
 
-
-
 //获取单个音频数据（增强错误处理和重试机制）
 async function getAudioChunk(text, voiceName, rate, pitch, volume, style, outputFormat = 'audio-24khz-48kbitrate-mono-mp3', maxRetries = 3) {
     const retryDelay = 500; // 重试延迟500ms
@@ -2458,6 +2539,22 @@ async function getAudioChunk(text, voiceName, rate, pitch, volume, style, output
                 throw new Error(`文本块过长: ${text.length} 字符，最大支持2000字符`);
             }
             
+            // 判断是否需要生成SSML
+            let ssmlBody;
+            if (text.includes('<speak>')) {
+                // 如果文本已经包含speak标签，假设是完整的SSML
+                // 注意：分块函数应该确保每个块都有完整的<speak>标签
+                ssmlBody = text;
+            } else {
+                // 普通文本，使用getSsml生成SSML
+                ssmlBody = getSsml(text, voiceName, rate, pitch, volume, style, slien);
+            }
+            
+            // 验证SSML格式
+            if (!ssmlBody.includes('<speak>') || !ssmlBody.includes('</speak>')) {
+                throw new Error("生成的SSML格式无效");
+            }
+            
             const response = await fetch(url, {
                 method: "POST",
                 headers: {
@@ -2466,15 +2563,14 @@ async function getAudioChunk(text, voiceName, rate, pitch, volume, style, output
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36 Edg/127.0.0.0",
                     "X-Microsoft-OutputFormat": outputFormat
                 },
-                body: getSsml(text, voiceName, rate, pitch, volume, style, slien)
+                body: ssmlBody
             });
 
+            // ... 原有的错误处理逻辑保持不变
             if (!response.ok) {
                 const errorText = await response.text();
                 
-                // 根据错误类型决定是否重试
                 if (response.status === 429) {
-                    // 频率限制，需要重试
                     if (attempt < maxRetries) {
                         console.log(`频率限制，第${attempt + 1}次重试，等待${retryDelay * (attempt + 1)}ms`);
                         await delay(retryDelay * (attempt + 1));
@@ -2482,7 +2578,6 @@ async function getAudioChunk(text, voiceName, rate, pitch, volume, style, output
                     }
                     throw new Error(`请求频率过高，已重试${maxRetries}次仍失败`);
                 } else if (response.status >= 500) {
-                    // 服务器错误，可以重试
                     if (attempt < maxRetries) {
                         console.log(`服务器错误，第${attempt + 1}次重试，等待${retryDelay * (attempt + 1)}ms`);
                         await delay(retryDelay * (attempt + 1));
@@ -2490,7 +2585,6 @@ async function getAudioChunk(text, voiceName, rate, pitch, volume, style, output
                     }
                     throw new Error(`Edge TTS服务器错误: ${response.status} ${errorText}`);
                 } else {
-                    // 客户端错误，不重试
                     throw new Error(`Edge TTS API错误: ${response.status} ${errorText}`);
                 }
             }
@@ -2499,18 +2593,15 @@ async function getAudioChunk(text, voiceName, rate, pitch, volume, style, output
             
         } catch (error) {
             if (attempt === maxRetries) {
-                // 最后一次重试失败
                 throw new Error(`音频生成失败（已重试${maxRetries}次）: ${error.message}`);
             }
             
-            // 如果是网络错误或其他可重试错误
             if (error.message.includes('fetch') || error.message.includes('network')) {
                 console.log(`网络错误，第${attempt + 1}次重试，等待${retryDelay * (attempt + 1)}ms`);
                 await delay(retryDelay * (attempt + 1));
                 continue;
             }
             
-            // 其他错误直接抛出
             throw error;
         }
     }
@@ -2527,35 +2618,30 @@ function escapeXmlText(text) {
 }
 
 function getSsml(text, voiceName, rate, pitch, volume, style, slien = 0) {
-    // --- 新增：判断 text 是否为 SSML 文本 ---
-    // 核心检测逻辑：检查文本是否以 `<speak` 标签开头并以 `</speak>` 标签结尾。
-    // 使用正则表达式进行宽松匹配，允许 `<speak>` 标签带有属性。
-    const isSsmlInput = /^\s*<speak[\s>].*<\/speak>\s*$/is.test(text);
-
-    if (isSsmlInput) {
-        // 情况1：输入是 SSML 文本
-        // 直接返回原文本，因为其中已包含完整的 `<speak>...</speak>` 结构和所有需要的标签。
-        // 注意：此时传入的 `voiceName`， `style` 等参数将被忽略，因为SSML内部应已定义。
-        console.log('检测到输入为 SSML 文本，将直接传递给 TTS 引擎。');
+    // 检测是否为完整的SSML文本（包含speak标签）
+    if (/^\s*<speak[\s>].*<\/speak>\s*$/is.test(text)) {
+        // 已经是完整的SSML，直接返回
+        // 注意：这里不添加延迟标记，因为延迟标记应该在原始SSML中指定
         return text;
-    } else {
-        // 对文本进行XML转义
-        const escapedText = escapeXmlText(text);
-        
-        let slien_str = '';
-        if (slien > 0) {
-            slien_str = `<break time="${slien}ms" />`
-        }
-        return `<speak xmlns="http://www.w3.org/2001/10/synthesis" xmlns:mstts="http://www.w3.org/2001/mstts" version="1.0" xml:lang="zh-CN"> 
-                    <voice name="${voiceName}"> 
-                        <mstts:express-as style="${style}"  styledegree="2.0" role="default" > 
-                            <prosody rate="${rate}" pitch="${pitch}" volume="${volume}">${escapedText}</prosody> 
-                        </mstts:express-as> 
-                        ${slien_str}
-                    </voice> 
-                </speak>`;
     }
-
+    
+    // 对文本进行XML转义
+    const escapedText = escapeXmlText(text);
+    
+    let slien_str = '';
+    if (slien > 0) {
+        slien_str = `<break time="${slien}ms" />`
+    }
+    
+    // 标准SSML生成
+    return `<speak xmlns="http://www.w3.org/2001/10/synthesis" xmlns:mstts="http://www.w3.org/2001/mstts" version="1.0" xml:lang="zh-CN"> 
+                <voice name="${voiceName}"> 
+                    <mstts:express-as style="${style}"  styledegree="2.0" role="default" > 
+                        <prosody rate="${rate}" pitch="${pitch}" volume="${volume}">${escapedText}</prosody> 
+                    </mstts:express-as> 
+                    ${slien_str}
+                </voice> 
+            </speak>`;
 }
 
 async function getEndpoint() {
