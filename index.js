@@ -2432,6 +2432,8 @@ async function processBatchedAudioChunks(chunks, voiceName, rate, pitch, volume,
 }
 
 async function getVoice(text, voiceName = "zh-CN-XiaoxiaoNeural", rate = '+0%', pitch = '+0Hz', volume = '+0%', style = "general", outputFormat = "audio-24khz-48kbitrate-mono-mp3") {
+    let isSsmlInput = false;  // 在外部定义
+    let chunks = [];  // 在外部定义
     try {
         // 文本预处理
         const cleanText = text.trim();
@@ -2440,7 +2442,7 @@ async function getVoice(text, voiceName = "zh-CN-XiaoxiaoNeural", rate = '+0%', 
         }
         
         // 检测是否为SSML文本
-        const isSsmlInput = /^\s*<speak[\s>].*<\/speak>\s*$/is.test(cleanText);
+        isSsmlInput = /^\s*<speak[\s>].*<\/speak>\s*$/is.test(cleanText);
         
         // 如果文本很短，直接处理
         if (cleanText.length <= 1500) {
@@ -2454,7 +2456,6 @@ async function getVoice(text, voiceName = "zh-CN-XiaoxiaoNeural", rate = '+0%', 
         }
 
         // 根据文本类型选择分块策略
-        let chunks;
         if (isSsmlInput) {
             console.log('检测到SSML输入，使用SSML分块策略');
             console.log('原始SSML长度:', cleanText.length);
