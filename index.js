@@ -2326,72 +2326,137 @@ function optimizedTextSplit(text, maxChunkSize = 1500) {
 
 // 专门的SSML分块函数
 function splitSsmlText(ssmlText, maxChunkSize = 1500) {
-    // 检查是否是完整的SSML文本
+    // 如果不是完整的SSML，按普通文本处理
     if (!/^\s*<speak[\s>].*<\/speak>\s*$/is.test(ssmlText)) {
-        // 如果不是完整SSML，按普通文本处理
         return optimizedTextSplit(ssmlText, maxChunkSize);
     }
 
+    console.log('开始处理SSML分块，原始长度:', ssmlText.length);
     const chunks = [];
-    
+
     try {
-        // 方法1：使用正则表达式解析SSML
-        // 移除外部speak标签，保留内部内容
-        const innerContent = ssmlText.replace(/^\s*<speak[^>]*>|<\/speak>\s*$/g, '').trim();
+        // 提取SSML头部信息
+        const headerMatch = ssmlText.match(/^\s*(<speak[^>]*>)/i);
+        if (!headerMatch) {
+            throw new Error('无法提取SSML头部信息');
+        }
         
-        // 查找所有的完整句子边界，同时考虑SSML标签
-        const sentencePattern = /([^。！？.!?]+[。！？.!?]|<[^>]+>)/g;
-        const matches = innerContent.match(sentencePattern) || [];
+        const header = headerMatch[1];
+        console.log('提取到SSML头部:', header);
         
-        let currentChunk = '<speak>';
-        let currentLength = currentChunk.length;
+        // 从原始SSML中移除头部和尾部的speak标签
+        const innerContent = ssmlText
+            .replace(/^\s*<speak[^>]*>/i, '')
+            .replace(/<\/speak>\s*$/i, '')
+            .trim();
         
-        for (let i = 0; i < matches.length; i++) {
-            const segment = matches[i];
-            const segmentLength = segment.length;
+        // 方法1：按<voice>标签分割（保持标签完整）
+        const voiceRegex = /<voice[^>]*>[\s\S]*?<\/voice>/gi;
+        const voiceMatches = innerContent.match(voiceRegex) || [];
+        
+        if (voiceMatches.length > 0) {
+            console.log(`找到 ${voiceMatches.length} 个完整的<voice>标签`);
             
-            // 如果当前块加上这个片段会超过限制，且当前块已经有内容
-            if (currentLength + segmentLength + 8 > maxChunkSize && currentLength > 7) {
-                // 完成当前块
+            let currentChunk = header; // 使用完整的头部
+            let currentLength = header.length;
+            
+            for (let i = 0; i < voiceMatches.length; i++) {
+                const voiceElement = voiceMatches[i];
+                const elementLength = voiceElement.length;
+                
+                // 检查是否需要分块
+                if (currentLength + elementLength + 9 > maxChunkSize && currentLength > header.length) {
+                    // 完成当前块
+                    currentChunk += '</speak>';
+                    chunks.push(currentChunk);
+                    console.log(`创建块 ${chunks.length}: ${currentChunk.length} 字符`);
+                    
+                    // 开始新块（包含头部）
+                    currentChunk = header;
+                    currentLength = header.length;
+                }
+                
+                // 添加voice元素到当前块
+                currentChunk += voiceElement;
+                currentLength += elementLength;
+            }
+            
+            // 添加最后一个块
+            if (currentLength > header.length) {
                 currentChunk += '</speak>';
                 chunks.push(currentChunk);
-                
-                // 开始新块
-                currentChunk = '<speak>';
-                currentLength = currentChunk.length;
+                console.log(`创建块 ${chunks.length}: ${currentChunk.length} 字符`);
             }
             
-            // 添加片段到当前块
-            currentChunk += segment;
-            currentLength += segmentLength;
-        }
-        
-        // 添加最后一个块
-        if (currentLength > 7) {
-            currentChunk += '</speak>';
-            chunks.push(currentChunk);
-        }
-        
-        // 验证：确保每个块都是有效的XML
-        const validChunks = chunks.filter(chunk => {
-            try {
-                // 简单检查标签配对
-                const openTags = (chunk.match(/<([^\/>]+)>/g) || []).length;
-                const closeTags = (chunk.match(/<\/([^>]+)>/g) || []).length;
-                return chunk.includes('<speak>') && chunk.includes('</speak>') && 
-                       openTags === closeTags;
-            } catch {
-                return false;
+            console.log('按voice标签分块完成，共', chunks.length, '个块');
+            
+            // 验证每个块
+            const validChunks = chunks.filter(chunk => {
+                const hasSpeakStart = chunk.includes('<speak');
+                const hasSpeakEnd = chunk.includes('</speak>');
+                const hasVoiceContent = chunk.includes('</voice>');
+                return hasSpeakStart && hasSpeakEnd && hasVoiceContent;
+            });
+            
+            if (validChunks.length === 0) {
+                throw new Error('所有分块都无效');
             }
-        });
+            
+            // 验证第一个块的内容
+            if (validChunks[0]) {
+                console.log('第一个块的内容验证：');
+                console.log('长度:', validChunks[0].length);
+                console.log('包含头部:', validChunks[0].startsWith(header));
+                console.log('包含结束标签:', validChunks[0].endsWith('</speak>'));
+                
+                // 提取内容检查
+                const contentMatch = validChunks[0].match(/<voice[^>]*>([^<]+)<\/voice>/i);
+                if (contentMatch) {
+                    console.log('第一个voice标签内容:', contentMatch[1].trim());
+                }
+            }
+            
+            return validChunks;
+        }
         
-        return validChunks;
+        // 如果找不到voice标签，使用更简单的分块方法
+        throw new Error('未找到完整的<voice>标签');
         
     } catch (error) {
         console.error('SSML分块失败:', error);
-        // 如果解析失败，回退到简单分块（移除标签）
-        const plainText = ssmlText.replace(/<[^>]*>/g, '');
-        return optimizedTextSplit(plainText, maxChunkSize);
+        
+        // 回退方案：直接按长度分块，但保持SSML结构
+        console.log('使用回退分块方案');
+        
+        // 移除多余的空白字符但保留基本结构
+        const cleanedSsml = ssmlText
+            .replace(/\n\s+/g, ' ')  // 替换换行和多个空格为单个空格
+            .replace(/\s+/g, ' ')     // 合并多个空格
+            .trim();
+        
+        if (cleanedSsml.length <= maxChunkSize) {
+            return [cleanedSsml];
+        }
+        
+        // 简单分块：直接按字符数分割
+        const result = [];
+        for (let i = 0; i < cleanedSsml.length; i += maxChunkSize) {
+            const chunk = cleanedSsml.substring(i, Math.min(i + maxChunkSize, cleanedSsml.length));
+            
+            // 确保每个块都是完整的SSML
+            let finalChunk = chunk;
+            if (!finalChunk.includes('<speak')) {
+                finalChunk = '<speak>' + finalChunk;
+            }
+            if (!finalChunk.includes('</speak>')) {
+                finalChunk = finalChunk + '</speak>';
+            }
+            
+            result.push(finalChunk);
+        }
+        
+        console.log('回退分块结果:', result.length, '个块');
+        return result;
     }
 }
 
@@ -2713,12 +2778,30 @@ function escapeXmlText(text) {
 function getSsml(text, voiceName, rate, pitch, volume, style, slien = 0) {
     // 检测是否为完整的SSML文本（包含speak标签）
     if (/^\s*<speak[\s>].*<\/speak>\s*$/is.test(text)) {
-        // 已经是完整的SSML，直接返回
-        // 注意：这里不添加延迟标记，因为延迟标记应该在原始SSML中指定
-        return text;
+        // 已经是完整的SSML，直接返回，但确保格式正确
+        // 移除多余的空白字符
+        const cleaned = text
+            .replace(/\n\s+/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+        
+        // 验证是否包含必要的标签
+        const hasSpeakStart = /<speak[\s>]/i.test(cleaned);
+        const hasSpeakEnd = /<\/speak>/i.test(cleaned);
+        
+        if (!hasSpeakStart || !hasSpeakEnd) {
+            console.warn('SSML格式警告：缺少完整的speak标签');
+            // 添加缺失的标签
+            let fixed = cleaned;
+            if (!hasSpeakStart) fixed = `<speak>${fixed}`;
+            if (!hasSpeakEnd) fixed = `${fixed}</speak>`;
+            return fixed;
+        }
+        
+        return cleaned;
     }
     
-    // 对文本进行XML转义
+    // 原有逻辑：普通文本生成SSML
     const escapedText = escapeXmlText(text);
     
     let slien_str = '';
@@ -2726,17 +2809,15 @@ function getSsml(text, voiceName, rate, pitch, volume, style, slien = 0) {
         slien_str = `<break time="${slien}ms" />`
     }
     
-    // 标准SSML生成
-    return `<speak xmlns="http://www.w3.org/2001/10/synthesis" xmlns:mstts="http://www.w3.org/2001/mstts" version="1.0" xml:lang="zh-CN"> 
-                <voice name="${voiceName}"> 
-                    <mstts:express-as style="${style}"  styledegree="2.0" role="default" > 
-                        <prosody rate="${rate}" pitch="${pitch}" volume="${volume}">${escapedText}</prosody> 
-                    </mstts:express-as> 
-                    ${slien_str}
-                </voice> 
-            </speak>`;
+    return `<speak xmlns="http://www.w3.org/2001/10/synthesis" xmlns:mstts="http://www.w3.org/2001/mstts" version="1.0" xml:lang="zh-CN">
+            <voice name="${voiceName}">
+                <mstts:express-as style="${style}" styledegree="2.0" role="default">
+                    <prosody rate="${rate}" pitch="${pitch}" volume="${volume}">${escapedText}</prosody>
+                </mstts:express-as>
+                ${slien_str}
+            </voice>
+        </speak>`;
 }
-
 async function getEndpoint() {
     const now = Date.now() / 1000;
 
