@@ -2457,9 +2457,19 @@ async function getVoice(text, voiceName = "zh-CN-XiaoxiaoNeural", rate = '+0%', 
         let chunks;
         if (isSsmlInput) {
             console.log('检测到SSML输入，使用SSML分块策略');
+            console.log('原始SSML长度:', cleanText.length);
+            console.log('原始SSML前200字符:', cleanText.substring(0, 200));
+            
             chunks = splitSsmlText(cleanText, 1500);
+            
+            console.log(`SSML分块结果: ${chunks.length} 个块`);
+            for (let i = 0; i < Math.min(chunks.length, 3); i++) {
+                console.log(`块 ${i + 1} 长度: ${chunks[i].length}`);
+                console.log(`块 ${i + 1} 前100字符: ${chunks[i].substring(0, 100)}`);
+            }
         } else {
             chunks = optimizedTextSplit(cleanText, 1500);
+            console.log(`普通文本分块结果: ${chunks.length} 个块`);
         }
         
         // 检查分块数量，防止超过CloudFlare限制
@@ -2495,7 +2505,12 @@ async function getVoice(text, voiceName = "zh-CN-XiaoxiaoNeural", rate = '+0%', 
         });
 
     } catch (error) {
-        console.error("语音合成失败:", error);
+        console.error("语音合成失败 - 详细信息:", {
+            error: error.message,
+            textLength: text?.length,
+            isSsmlInput: isSsmlInput,
+            chunksCount: chunks?.length
+        });
         return new Response(JSON.stringify({
             error: {
                 message: error.message || String(error),
@@ -2514,8 +2529,9 @@ async function getVoice(text, voiceName = "zh-CN-XiaoxiaoNeural", rate = '+0%', 
 }
 
 //获取单个音频数据（增强错误处理和重试机制）
+// 更新 getAudioChunk 函数中的SSML验证部分
 async function getAudioChunk(text, voiceName, rate, pitch, volume, style, outputFormat = 'audio-24khz-48kbitrate-mono-mp3', maxRetries = 3) {
-    const retryDelay = 500; // 重试延迟500ms
+    const retryDelay = 500;
     
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
         try {
@@ -2541,18 +2557,60 @@ async function getAudioChunk(text, voiceName, rate, pitch, volume, style, output
             
             // 判断是否需要生成SSML
             let ssmlBody;
-            if (text.includes('<speak>')) {
-                // 如果文本已经包含speak标签，假设是完整的SSML
-                // 注意：分块函数应该确保每个块都有完整的<speak>标签
-                ssmlBody = text;
+            
+            // 改进的SSML检测逻辑
+            const isLikelySsml = /<speak[\s>]/i.test(text) || 
+                                /<voice[\s>]/i.test(text) ||
+                                /<prosody[\s>]/i.test(text) ||
+                                /<break[\s>]/i.test(text) ||
+                                /<[^>]+\/[^>]*>/i.test(text); // 检测自闭标签
+            
+            if (isLikelySsml) {
+                // 如果文本看起来像SSML（包含标签结构）
+                if (!text.includes('<speak')) {
+                    // 如果没有外层speak标签，添加它们
+                    ssmlBody = `<speak>${text}</speak>`;
+                } else if (/<speak[^>]*>/i.test(text) && !/<\/speak>/i.test(text)) {
+                    // 如果有开始标签但没有结束标签
+                    ssmlBody = text + '</speak>';
+                } else if (!/<speak[^>]*>/i.test(text) && /<\/speak>/i.test(text)) {
+                    // 如果有结束标签但没有开始标签
+                    ssmlBody = '<speak>' + text;
+                } else {
+                    // 已经有完整的speak标签或看起来是完整的SSML
+                    ssmlBody = text;
+                }
             } else {
                 // 普通文本，使用getSsml生成SSML
                 ssmlBody = getSsml(text, voiceName, rate, pitch, volume, style, slien);
             }
             
-            // 验证SSML格式
-            if (!ssmlBody.includes('<speak>') || !ssmlBody.includes('</speak>')) {
-                throw new Error(ssmlBody);
+            // 改进的SSML验证
+            console.log('SSML内容（前200字符）:', ssmlBody.substring(0, 200));
+            
+            // 验证是否包含必要的SSML标签（更宽松的验证）
+            const hasSpeakStart = /<speak[\s>]/i.test(ssmlBody);
+            const hasSpeakEnd = /<\/speak>/i.test(ssmlBody);
+            
+            if (!hasSpeakStart || !hasSpeakEnd) {
+                console.warn('SSML格式警告：缺少完整的speak标签，已自动修复');
+                // 自动修复：添加缺失的标签
+                if (!hasSpeakStart) ssmlBody = `<speak>${ssmlBody}`;
+                if (!hasSpeakEnd) ssmlBody = `${ssmlBody}</speak>`;
+            }
+            
+            // 验证XML格式是否正确
+            try {
+                // 简单的XML结构检查
+                const openTags = (ssmlBody.match(/<([^\/>]+)>/g) || []).length;
+                const closeTags = (ssmlBody.match(/<\/([^>]+)>/g) || []).length;
+                const selfClosingTags = (ssmlBody.match(/<[^>]+\/>/g) || []).length;
+                
+                if ((openTags + selfClosingTags) !== (closeTags + selfClosingTags)) {
+                    console.warn(`SSML标签不匹配：开始标签=${openTags}, 结束标签=${closeTags}, 自闭标签=${selfClosingTags}`);
+                }
+            } catch (e) {
+                console.warn('SSML格式检查异常:', e.message);
             }
             
             const response = await fetch(url, {
@@ -2565,10 +2623,12 @@ async function getAudioChunk(text, voiceName, rate, pitch, volume, style, output
                 },
                 body: ssmlBody
             });
-
+            
             // ... 原有的错误处理逻辑保持不变
             if (!response.ok) {
                 const errorText = await response.text();
+                console.error('SSML请求失败:', response.status, errorText);
+                console.error('SSML内容:', ssmlBody);
                 
                 if (response.status === 429) {
                     if (attempt < maxRetries) {
@@ -2592,8 +2652,40 @@ async function getAudioChunk(text, voiceName, rate, pitch, volume, style, output
             return await response.blob();
             
         } catch (error) {
+            console.error(`处理SSML块时出错 (尝试 ${attempt + 1}/${maxRetries + 1}):`, error);
+            
             if (attempt === maxRetries) {
-                throw new Error(`音频生成失败（已重试${maxRetries}次）: ${error.message}`);
+                // 最后一次尝试：尝试回退到简单文本
+                try {
+                    console.log('尝试回退到简单文本处理');
+                    const plainText = text.replace(/<[^>]*>/g, ''); // 移除所有标签
+                    if (plainText.trim().length > 0) {
+                        const endpoint = await getEndpoint();
+                        const url = `https://${endpoint.r}.tts.speech.microsoft.com/cognitiveservices/v1`;
+                        
+                        // 使用标准SSML
+                        const fallbackSsml = getSsml(plainText, voiceName, rate, pitch, volume, style, 0);
+                        
+                        const response = await fetch(url, {
+                            method: "POST",
+                            headers: {
+                                "Authorization": endpoint.t,
+                                "Content-Type": "application/ssml+xml",
+                                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36 Edg/127.0.0.0",
+                                "X-Microsoft-OutputFormat": outputFormat
+                            },
+                            body: fallbackSsml
+                        });
+                        
+                        if (response.ok) {
+                            return await response.blob();
+                        }
+                    }
+                } catch (fallbackError) {
+                    console.error('回退处理也失败:', fallbackError);
+                }
+                
+                throw new Error(`音频生成失败（已重试${maxRetries}次，回退处理也失败）: ${error.message}`);
             }
             
             if (error.message.includes('fetch') || error.message.includes('network')) {
